@@ -24,6 +24,7 @@ final class QuotaViewModel {
     private let cursorFetcher = CursorQuotaFetcher()
     private let codexCLIFetcher = CodexCLIQuotaFetcher()
     private let geminiCLIFetcher = GeminiCLIQuotaFetcher()
+    private let traeFetcher = TraeQuotaFetcher()
     
     private var lastKnownAccountStatuses: [String: String] = [:]
     
@@ -80,9 +81,15 @@ final class QuotaViewModel {
     
     /// Initialize for Full Mode (with proxy)
     private func initializeFullMode() async {
+        // Always refresh quotas directly first (works without proxy)
+        await refreshQuotasUnified()
+        
         let autoStartProxy = UserDefaults.standard.bool(forKey: "autoStartProxy")
         if autoStartProxy && proxyManager.isBinaryInstalled {
             await startProxy()
+        } else {
+            // If not auto-starting proxy, start quota auto-refresh
+            startQuotaAutoRefreshWithoutProxy()
         }
     }
     
@@ -121,8 +128,9 @@ final class QuotaViewModel {
         async let cursor: () = refreshCursorQuotasInternal()
         async let codexCLI: () = refreshCodexCLIQuotasInternal()
         async let geminiCLI: () = refreshGeminiCLIQuotasInternal()
+        async let trae: () = refreshTraeQuotasInternal()
         
-        _ = await (antigravity, openai, copilot, claudeCode, cursor, codexCLI, geminiCLI)
+        _ = await (antigravity, openai, copilot, claudeCode, cursor, codexCLI, geminiCLI, trae)
         
         checkQuotaNotifications()
         autoSelectMenuBarItems()
@@ -169,12 +177,20 @@ final class QuotaViewModel {
     private func refreshClaudeCodeQuotasInternal() async {
         let quotas = await claudeCodeFetcher.fetchAsProviderQuota()
         if quotas.isEmpty {
-            // Only remove if in quota-only mode (proxy doesn't manage Claude)
-            if modeManager.isQuotaOnlyMode {
+            // Only remove if no other source has Claude data
+            if providerQuotas[.claude]?.isEmpty ?? true {
                 providerQuotas.removeValue(forKey: .claude)
             }
         } else {
-            providerQuotas[.claude] = quotas
+            // Merge with existing data (don't overwrite proxy data)
+            if var existing = providerQuotas[.claude] {
+                for (email, quota) in quotas {
+                    existing[email] = quota
+                }
+                providerQuotas[.claude] = existing
+            } else {
+                providerQuotas[.claude] = quotas
+            }
         }
     }
     
@@ -227,6 +243,16 @@ final class QuotaViewModel {
         }
     }
     
+    /// Refresh Trae quota using SQLite database
+    private func refreshTraeQuotasInternal() async {
+        let quotas = await traeFetcher.fetchAsProviderQuota()
+        if quotas.isEmpty {
+            providerQuotas.removeValue(forKey: .trae)
+        } else {
+            providerQuotas[.trae] = quotas
+        }
+    }
+    
     /// Start auto-refresh for quota-only mode
     private func startQuotaOnlyAutoRefresh() {
         refreshTask?.cancel()
@@ -235,6 +261,20 @@ final class QuotaViewModel {
                 // Refresh every 60 seconds in quota-only mode
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
                 await refreshQuotasDirectly()
+            }
+        }
+    }
+    
+    /// Start auto-refresh for quota when proxy is not running (Full Mode)
+    private func startQuotaAutoRefreshWithoutProxy() {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60 seconds
+                // Only refresh if proxy is still not running
+                if !proxyManager.proxyStatus.running {
+                    await refreshQuotasUnified()
+                }
             }
         }
     }
@@ -362,8 +402,42 @@ final class QuotaViewModel {
         async let copilot: () = refreshCopilotQuotasInternal()
         async let cursor: () = refreshCursorQuotasInternal()
         async let claudeCode: () = refreshClaudeCodeQuotasInternal()
+        async let trae: () = refreshTraeQuotasInternal()
         
-        _ = await (antigravity, openai, copilot, cursor, claudeCode)
+        _ = await (antigravity, openai, copilot, cursor, claudeCode, trae)
+        
+        checkQuotaNotifications()
+        autoSelectMenuBarItems()
+        
+        isLoadingQuotas = false
+    }
+    
+    /// Unified quota refresh - works in both Full Mode and Quota-Only Mode
+    /// In Full Mode: uses direct fetchers (works without proxy)
+    /// In Quota-Only Mode: uses direct fetchers + CLI fetchers
+    func refreshQuotasUnified() async {
+        guard !isLoadingQuotas else { return }
+        
+        isLoadingQuotas = true
+        lastQuotaRefreshTime = Date()
+        lastQuotaRefresh = Date()
+        
+        // Always refresh direct fetchers (these don't need proxy)
+        async let antigravity: () = refreshAntigravityQuotasInternal()
+        async let openai: () = refreshOpenAIQuotasInternal()
+        async let copilot: () = refreshCopilotQuotasInternal()
+        async let claudeCode: () = refreshClaudeCodeQuotasInternal()
+        async let cursor: () = refreshCursorQuotasInternal()
+        async let trae: () = refreshTraeQuotasInternal()
+        
+        // In Quota-Only Mode, also include CLI fetchers
+        if modeManager.isQuotaOnlyMode {
+            async let codexCLI: () = refreshCodexCLIQuotasInternal()
+            async let geminiCLI: () = refreshGeminiCLIQuotasInternal()
+            _ = await (antigravity, openai, copilot, claudeCode, cursor, trae, codexCLI, geminiCLI)
+        } else {
+            _ = await (antigravity, openai, copilot, claudeCode, cursor, trae)
+        }
         
         checkQuotaNotifications()
         autoSelectMenuBarItems()
@@ -404,6 +478,8 @@ final class QuotaViewModel {
             await refreshCursorQuotasInternal()
         case .gemini:
             await refreshGeminiCLIQuotasInternal()
+        case .trae:
+            await refreshTraeQuotasInternal()
         default:
             break
         }

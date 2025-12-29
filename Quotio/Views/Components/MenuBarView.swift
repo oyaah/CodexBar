@@ -2,180 +2,204 @@
 //  MenuBarView.swift
 //  Quotio
 //
+//  Card-based menu bar panel with hero metric design.
+//  Each card has ONE dominant metric + secondary metrics list.
+//
 
 import SwiftUI
 
-struct MenuBarView: View {
-    @Environment(QuotaViewModel.self) private var viewModel
-    @Environment(\.openWindow) private var openWindow
-    private let modeManager = AppModeManager.shared
+// MARK: - Softer Color Palette
+
+private extension Color {
+    static let quotaGreen = Color(red: 0.35, green: 0.68, blue: 0.45)   // Muted green
+    static let quotaYellow = Color(red: 0.85, green: 0.65, blue: 0.25)  // Warm yellow
+    static let quotaOrange = Color(red: 0.9, green: 0.45, blue: 0.3)    // Soft orange/red
+}
+
+// MARK: - Hero Metric Selection
+
+/// Priority levels for hero metric selection
+private enum MetricPriority: Int, Comparable {
+    case primary = 0    // Hard limits: weekly, monthly, plan
+    case secondary = 1  // Session, fast/slow requests
+    case subset = 2     // Sonnet-only, completions (never hero unless only option)
     
-    private var allQuotas: [(provider: AIProvider, email: String, data: ProviderQuotaData, uniqueId: String)] {
-        var result: [(provider: AIProvider, email: String, data: ProviderQuotaData, uniqueId: String)] = []
+    static func < (lhs: MetricPriority, rhs: MetricPriority) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+/// Determines metric priority for hero selection
+private func metricPriority(for name: String) -> MetricPriority {
+    let lowered = name.lowercased()
+    
+    // Subset metrics - lowest priority
+    if lowered.contains("sonnet") || lowered.contains("completion") {
+        return .subset
+    }
+    
+    // Primary hard limits
+    if lowered.contains("weekly") || lowered.contains("monthly") ||
+       lowered.contains("plan") || lowered.contains("quota") ||
+       lowered.contains("usage") {
+        return .primary
+    }
+    
+    // Secondary metrics
+    return .secondary
+}
+
+/// Select hero metric from a list of models
+private func selectHeroMetric(from models: [ModelQuota]) -> ModelQuota? {
+    guard !models.isEmpty else { return nil }
+    
+    // Sort by: priority (ascending), then by used% (descending)
+    let sorted = models.sorted { a, b in
+        let priorityA = metricPriority(for: a.name)
+        let priorityB = metricPriority(for: b.name)
         
-        for (provider, quotas) in viewModel.providerQuotas {
-            for (email, data) in quotas where !data.models.isEmpty {
-                let uniqueId = "\(provider.rawValue)_\(email)"
-                result.append((provider: provider, email: email, data: data, uniqueId: uniqueId))
-            }
+        if priorityA != priorityB {
+            return priorityA < priorityB
         }
         
-        return result.sorted { $0.provider.displayName < $1.provider.displayName }
+        // Higher usage (lower remaining %) = more urgent
+        return a.percentage < b.percentage
     }
     
-    private var hasQuotaData: Bool {
-        !allQuotas.isEmpty
+    return sorted.first
+}
+
+/// Select hero from grouped models (for Antigravity)
+private func selectHeroFromGroups(_ groups: [GroupedModelQuota]) -> GroupedModelQuota? {
+    guard !groups.isEmpty else { return nil }
+    // Pick the group with lowest remaining percentage (most urgent)
+    return groups.min { $0.percentage < $1.percentage }
+}
+
+// MARK: - Quota Color Helper
+
+private func quotaColor(for percentage: Double) -> Color {
+    let used = 100 - percentage
+    if used >= 90 { return .quotaOrange }
+    if used >= 70 { return .quotaYellow }
+    return .quotaGreen
+}
+
+// MARK: - Main View
+
+struct MenuBarView: View {
+    @Environment(QuotaViewModel.self) private var viewModel
+    @AppStorage("menuBarSelectedProvider") private var selectedProviderRaw: String = ""
+    
+    private let modeManager = AppModeManager.shared
+    
+    // MARK: - Computed Properties
+    
+    private var providersWithData: [AIProvider] {
+        var providers = Set<AIProvider>()
+        for (provider, accountQuotas) in viewModel.providerQuotas {
+            if !accountQuotas.isEmpty {
+                providers.insert(provider)
+            }
+        }
+        return providers.sorted { $0.displayName < $1.displayName }
     }
+    
+    private var selectedProvider: AIProvider? {
+        if !selectedProviderRaw.isEmpty,
+           let provider = AIProvider(rawValue: selectedProviderRaw),
+           providersWithData.contains(provider) {
+            return provider
+        }
+        return providersWithData.first
+    }
+    
+    private var filteredQuotas: [(email: String, data: ProviderQuotaData)] {
+        guard let selected = selectedProvider,
+              let quotas = viewModel.providerQuotas[selected] else { return [] }
+        return quotas.map { ($0.key, $0.value) }.sorted { $0.email < $1.email }
+    }
+    
+    // MARK: - Body
     
     var body: some View {
         VStack(spacing: 0) {
             headerSection
             
-            Divider()
-                .padding(.vertical, 8)
-            
+            // Full Mode: Proxy info section (after header)
             if modeManager.isFullMode {
-                // Full mode: Show everything if proxy is running
-                if viewModel.proxyManager.proxyStatus.running {
-                    statsSection
-                    
-                    Divider()
-                        .padding(.vertical, 8)
-                    
-                    if hasQuotaData {
-                        quotaSection
-                        
-                        Divider()
-                            .padding(.vertical, 8)
-                    }
-                    
-                    providersSection
-                    
-                    Divider()
-                        .padding(.vertical, 8)
-                }
-            } else {
-                // Quota-only mode: Always show quota
-                if hasQuotaData {
-                    quotaSection
-                    
-                    Divider()
-                        .padding(.vertical, 8)
-                }
+                Divider()
+                    .padding(.vertical, 8)
                 
-                // Show accounts in quota-only mode
-                quotaOnlyAccountsSection
+                proxyInfoSection
+            }
+            
+            if !providersWithData.isEmpty {
+                Divider()
+                    .padding(.vertical, 8)
+                
+                providerFilterSection
                 
                 Divider()
                     .padding(.vertical, 8)
+                
+                accountCardsSection
+            } else {
+                Divider()
+                    .padding(.vertical, 8)
+                
+                emptyStateSection
             }
+            
+            Divider()
+                .padding(.vertical, 8)
             
             actionsSection
         }
         .padding(12)
-        .frame(width: 320)
+        .frame(width: 300)
+        .background(.clear)
     }
     
-    // MARK: - Header Section
+    // MARK: - Header
     
     private var headerSection: some View {
-        HStack(spacing: 12) {
-            // Status indicator
-            ZStack {
-                if modeManager.isFullMode {
-                    Circle()
-                        .fill(viewModel.proxyManager.proxyStatus.running ? Color.green : Color.gray)
-                        .frame(width: 12, height: 12)
-                    
-                    if viewModel.proxyManager.proxyStatus.running {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 12, height: 12)
-                            .opacity(0.5)
-                            .scaleEffect(1.5)
-                            .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: viewModel.proxyManager.proxyStatus.running)
-                    }
-                } else {
-                    // Quota-only mode: Show quota icon
-                    Image(systemName: "chart.bar.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
-            }
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Quotio")
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                
-                if modeManager.isFullMode {
-                    Text(viewModel.proxyManager.proxyStatus.running 
-                         ? "menubar.running".localized() 
-                         : "menubar.stopped".localized())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("menubar.quotaMode".localized())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+        HStack {
+            Text("Quotio")
+                .font(.headline)
+                .fontWeight(.semibold)
             
             Spacer()
             
-            // Mode-specific button
-            if modeManager.isFullMode {
-                // Full mode: Toggle proxy
-                Button {
-                    Task { await viewModel.toggleProxy() }
-                } label: {
-                    Image(systemName: viewModel.proxyManager.proxyStatus.running ? "stop.fill" : "play.fill")
-                        .font(.title3)
-                        .foregroundStyle(viewModel.proxyManager.proxyStatus.running ? .red : .green)
-                }
-                .buttonStyle(.plain)
-                .help(viewModel.proxyManager.proxyStatus.running 
-                      ? "action.stopProxy".localized() 
-                      : "action.startProxy".localized())
-            } else {
-                // Quota-only mode: Refresh button
-                Button {
-                    Task { await viewModel.refreshQuotasDirectly() }
-                } label: {
-                    if viewModel.isLoadingQuotas {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.title3)
-                            .foregroundStyle(.blue)
-                    }
-                }
-                .buttonStyle(.plain)
-                .help("action.refreshQuota".localized())
-                .disabled(viewModel.isLoadingQuotas)
+            if viewModel.isLoadingQuotas {
+                ProgressView()
+                    .controlSize(.small)
             }
         }
     }
     
-    // MARK: - Stats Section
+    // MARK: - Proxy Info (Full Mode)
     
-    private var statsSection: some View {
-        VStack(spacing: 8) {
-            // Endpoint
+    private var proxyInfoSection: some View {
+        let portString = String(viewModel.proxyManager.port)
+        
+        return VStack(spacing: 8) {
+            // Proxy URL
             HStack {
                 Image(systemName: "link")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 
-                Text(viewModel.proxyManager.proxyStatus.endpoint)
+                Text("http://localhost:\(portString)")
                     .font(.system(.caption, design: .monospaced))
                     .lineLimit(1)
                 
                 Spacer()
                 
                 Button {
-                    viewModel.proxyManager.copyEndpointToClipboard()
+                    let url = "http://localhost:\(portString)"
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(url, forType: .string)
                 } label: {
                     Image(systemName: "doc.on.doc")
                         .font(.caption)
@@ -184,458 +208,422 @@ struct MenuBarView: View {
                 .foregroundStyle(.secondary)
             }
             
-            // Quick stats row
-            HStack(spacing: 16) {
-                StatItem(
-                    icon: "person.2.fill",
-                    value: "\(viewModel.readyAccounts)/\(viewModel.totalAccounts)",
-                    label: "menubar.accounts".localized(),
-                    color: .blue
-                )
-                
-                StatItem(
-                    icon: "arrow.up.arrow.down",
-                    value: "\(viewModel.usageStats?.usage?.totalRequests ?? 0)",
-                    label: "menubar.requests".localized(),
-                    color: .green
-                )
-                
-                StatItem(
-                    icon: "checkmark.circle",
-                    value: String(format: "%.0f%%", viewModel.usageStats?.usage?.successRate ?? 0.0),
-                    label: "menubar.success".localized(),
-                    color: .orange
-                )
-            }
-        }
-    }
-    
-    // MARK: - Quota Section
-    
-    private var quotaSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+            // Proxy Status
             HStack {
-                Text("menubar.quota".localized())
+                Circle()
+                    .fill(viewModel.proxyManager.proxyStatus.running ? Color.green : Color.gray)
+                    .frame(width: 8, height: 8)
+                
+                Text(viewModel.proxyManager.proxyStatus.running 
+                     ? "status.running".localized() 
+                     : "status.stopped".localized())
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 
                 Spacer()
                 
-                if viewModel.isLoadingQuotas {
-                    ProgressView()
-                        .controlSize(.mini)
-                }
-            }
-            
-            ForEach(Array(allQuotas.prefix(4)), id: \.uniqueId) { item in
-                QuotaAccountRow(provider: item.provider, email: item.email, data: item.data)
-            }
-            
-            if allQuotas.count > 4 {
-                Text("menubar.andMore".localized()
-                    .replacingOccurrences(of: "{count}", with: "\(allQuotas.count - 4)"))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-    
-    // MARK: - Providers Section
-    
-    private var providersSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("menubar.providers".localized())
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            
-            if viewModel.connectedProviders.isEmpty {
-                Text("menubar.noProviders".localized())
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .padding(.vertical, 4)
-            } else {
-                ForEach(viewModel.connectedProviders.prefix(4)) { provider in
-                    ProviderRow(
-                        provider: provider,
-                        accounts: viewModel.authFilesByProvider[provider] ?? []
-                    )
-                }
-                
-                if viewModel.connectedProviders.count > 4 {
-                    Text("menubar.andMore".localized()
-                        .replacingOccurrences(of: "{count}", with: "\(viewModel.connectedProviders.count - 4)"))
+                Button {
+                    Task { await viewModel.toggleProxy() }
+                } label: {
+                    Text(viewModel.proxyManager.proxyStatus.running 
+                         ? "action.stop".localized() 
+                         : "action.start".localized())
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .fontWeight(.medium)
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(viewModel.proxyManager.proxyStatus.running ? .red : .green)
             }
         }
+        .padding(8)
+        .background(Color.secondary.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
     
     // MARK: - Actions Section
     
     private var actionsSection: some View {
         VStack(spacing: 4) {
-            // Open main window
-            Button {
-                openMainWindow()
-            } label: {
-                HStack {
-                    Image(systemName: "macwindow")
-                    Text("menubar.openApp".localized())
-                    Spacer()
-                    Text("⌘O")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 8)
-            .background(.quaternary.opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            
             // Refresh
-            Button {
-                if modeManager.isFullMode {
-                    Task { await viewModel.refreshData() }
-                } else {
-                    Task { await viewModel.refreshQuotasDirectly() }
-                }
-            } label: {
-                HStack {
-                    Image(systemName: "arrow.clockwise")
-                    Text("action.refresh".localized())
-                    Spacer()
-                    Text("⌘R")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 8)
-            .disabled(modeManager.isFullMode && !viewModel.proxyManager.proxyStatus.running)
-            
-            Divider()
-                .padding(.vertical, 4)
-            
-            // Quit
-            Button {
+            MenuBarActionButton(
+                icon: "arrow.clockwise",
+                title: "action.refresh".localized(),
+                isLoading: viewModel.isLoadingQuotas
+            ) {
                 Task {
-                    if modeManager.isFullMode {
-                        viewModel.stopProxy()
-                    }
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                    NSApplication.shared.terminate(nil)
-                }
-            } label: {
-                HStack {
-                    Image(systemName: "power")
-                    Text("menubar.quit".localized())
-                    Spacer()
-                    Text("⌘Q")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                    await viewModel.refreshQuotasUnified()
                 }
             }
-            .buttonStyle(.plain)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 8)
+            .disabled(viewModel.isLoadingQuotas)
+            
+            // Open Quotio
+            MenuBarActionButton(
+                icon: "macwindow",
+                title: "action.openApp".localized()
+            ) {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                if let window = NSApplication.shared.windows.first(where: { $0.title == "Quotio" }) {
+                    window.makeKeyAndOrderFront(nil)
+                }
+            }
+            
+            // Quit Quotio
+            MenuBarActionButton(
+                icon: "xmark.circle",
+                title: "action.quit".localized()
+            ) {
+                NSApplication.shared.terminate(nil)
+            }
         }
     }
     
-    // MARK: - Quota-Only Accounts Section
+    // MARK: - Provider Filter
     
-    private var quotaOnlyAccountsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("menubar.trackedAccounts".localized())
-                    .font(.caption)
+    private var providerFilterSection: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(providersWithData) { provider in
+                ProviderFilterButton(
+                    provider: provider,
+                    isSelected: selectedProvider == provider
+                ) {
+                    selectedProviderRaw = provider.rawValue
+                }
+            }
+        }
+    }
+    
+    // MARK: - Account Cards
+    
+    private var accountCardsSection: some View {
+        VStack(spacing: 8) {
+            ForEach(filteredQuotas, id: \.email) { item in
+                MenuBarQuotaCard(
+                    email: item.email,
+                    data: item.data,
+                    provider: selectedProvider ?? .gemini
+                )
+            }
+        }
+    }
+    
+    // MARK: - Empty State
+    
+    private var emptyStateSection: some View {
+        VStack(spacing: 6) {
+            Text("No quota data")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+    }
+}
+
+// MARK: - Provider Filter Button
+
+private struct ProviderFilterButton: View {
+    let provider: AIProvider
+    let isSelected: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                // Monochrome icon
+                ProviderIconMono(provider: provider, size: 14)
+                
+                Text(provider.shortName)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+            }
+            .foregroundStyle(isSelected ? .primary : .secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(isSelected ? Color.secondary.opacity(0.12) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Monochrome Provider Icon
+
+private struct ProviderIconMono: View {
+    let provider: AIProvider
+    let size: CGFloat
+    
+    var body: some View {
+        Group {
+            if let assetName = provider.menuBarIconAsset,
+               let nsImage = NSImage(named: assetName) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .colorMultiply(.primary)
+            } else {
+                Image(systemName: provider.iconName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+// MARK: - Quota Card
+
+private struct MenuBarQuotaCard: View {
+    let email: String
+    let data: ProviderQuotaData
+    let provider: AIProvider
+    
+    @State private var isHovered = false
+    
+    // For Antigravity: use grouped models
+    private var isAntigravity: Bool {
+        provider == .antigravity && data.hasGroupedModels
+    }
+    
+    private var groupedModels: [GroupedModelQuota] {
+        data.groupedModels
+    }
+    
+    private var heroGroup: GroupedModelQuota? {
+        selectHeroFromGroups(groupedModels)
+    }
+    
+    private var secondaryGroups: [GroupedModelQuota] {
+        guard let hero = heroGroup else { return groupedModels }
+        return groupedModels.filter { $0.id != hero.id }
+    }
+    
+    // For other providers: use regular models
+    private var heroMetric: ModelQuota? {
+        selectHeroMetric(from: data.models)
+    }
+    
+    private var secondaryMetrics: [ModelQuota] {
+        guard let hero = heroMetric else { return data.models }
+        return data.models.filter { $0.name != hero.name }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Header: Email + Plan
+            cardHeader
+            
+            // Hero section (different for Antigravity)
+            if isAntigravity {
+                if let hero = heroGroup {
+                    heroGroupSection(group: hero)
+                }
+            } else {
+                if let hero = heroMetric {
+                    heroSection(metric: hero)
+                }
+            }
+            
+            // Secondary section
+            if isAntigravity {
+                if !secondaryGroups.isEmpty {
+                    secondaryGroupsSection
+                }
+            } else {
+                if !secondaryMetrics.isEmpty {
+                    secondaryMetricsSection
+                }
+            }
+        }
+        .padding(10)
+        .background(isHovered ? Color.secondary.opacity(0.08) : Color.secondary.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { isHovered = $0 }
+    }
+    
+    // MARK: - Card Header
+    
+    private var cardHeader: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(email)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+            
+            if let plan = data.planDisplayName {
+                Text(plan)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+    
+    // MARK: - Hero Section (Regular)
+    
+    private func heroSection(metric: ModelQuota) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(metric.displayName)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 
                 Spacer()
                 
-                Text("\(viewModel.directAuthFiles.count)")
-                    .font(.caption2)
+                Text(formatPercentage(metric.percentage))
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .foregroundStyle(quotaColor(for: metric.percentage))
+            }
+            
+            HeroProgressBar(percentage: metric.percentage)
+            
+            if !metric.formattedResetTime.isEmpty && metric.formattedResetTime != "—" {
+                Text("Resets in \(metric.formattedResetTime)")
+                    .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
-            
-            if viewModel.directAuthFiles.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "person.crop.circle.badge.questionmark")
-                        .font(.title2)
-                        .foregroundStyle(.tertiary)
-                    
-                    Text("menubar.noAccountsFound".localized())
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-            } else {
-                // Group by provider
-                let groupedAccounts = Dictionary(grouping: viewModel.directAuthFiles) { $0.provider }
-                
-                ForEach(AIProvider.allCases.filter { groupedAccounts[$0] != nil }, id: \.self) { provider in
-                    if let accounts = groupedAccounts[provider] {
-                        HStack(spacing: 8) {
-                            ProviderIcon(provider: provider, size: 16)
-                            
-                            Text(provider.displayName)
-                                .font(.caption)
-                                .lineLimit(1)
-                            
-                            Spacer()
-                            
-                            Text("\(accounts.count)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 2)
-                    }
-                }
-            }
         }
     }
     
-    private func openMainWindow() {
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        
-        if let window = NSApplication.shared.windows.first(where: { 
-            $0.title == "Quotio" && $0.isVisible == false 
-        }) {
-            window.makeKeyAndOrderFront(nil)
-        } else if let window = NSApplication.shared.windows.first(where: { 
-            $0.title == "Quotio" 
-        }) {
-            window.makeKeyAndOrderFront(nil)
-        } else {
-            openWindow(id: "main")
-        }
-    }
-}
-
-// MARK: - Supporting Views
-
-private struct StatItem: View {
-    let icon: String
-    let value: String
-    let label: String
-    let color: Color
+    // MARK: - Hero Section (Antigravity Grouped)
     
-    var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.caption2)
-                    .foregroundStyle(color)
-                
-                Text(value)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-            }
-            
-            Text(label)
-                .font(.caption2)
+    private func heroGroupSection(group: GroupedModelQuota) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: 4) {
+                    Image(systemName: group.group.icon)
+                        .font(.system(size: 10))
+                    Text(group.displayName)
+                        .font(.system(size: 11))
+                }
                 .foregroundStyle(.secondary)
+                
+                Spacer()
+                
+                Text(formatPercentage(group.percentage))
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .foregroundStyle(quotaColor(for: group.percentage))
+            }
+            
+            HeroProgressBar(percentage: group.percentage)
+            
+            if !group.formattedResetTime.isEmpty && group.formattedResetTime != "—" {
+                Text("Resets in \(group.formattedResetTime)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .frame(maxWidth: .infinity)
+    }
+    
+    // MARK: - Secondary Section (Regular)
+    
+    private var secondaryMetricsSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(secondaryMetrics.prefix(3)) { metric in
+                SecondaryMetricRow(
+                    name: metric.displayName,
+                    percentage: metric.percentage
+                )
+            }
+        }
+        .padding(.top, 4)
+    }
+    
+    // MARK: - Secondary Section (Antigravity Grouped)
+    
+    private var secondaryGroupsSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(secondaryGroups.prefix(3)) { group in
+                SecondaryGroupRow(group: group)
+            }
+        }
+        .padding(.top, 4)
+    }
+    
+    // MARK: - Helpers
+    
+    private func formatPercentage(_ value: Double) -> String {
+        let remaining = Int(value)
+        return remaining < 0 ? "—" : "\(remaining)%"
     }
 }
 
-private struct ProviderRow: View {
-    let provider: AIProvider
-    let accounts: [AuthFile]
-    
-    private var readyCount: Int {
-        accounts.filter { $0.isReady }.count
-    }
-    
-    private var statusColor: Color {
-        if readyCount == accounts.count { return .green }
-        if readyCount > 0 { return .orange }
-        return .red
-    }
+// MARK: - Hero Progress Bar
+
+private struct HeroProgressBar: View {
+    let percentage: Double
     
     var body: some View {
-        HStack(spacing: 8) {
-            ProviderIcon(provider: provider, size: 16)
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(.quaternary)
+                
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(quotaColor(for: percentage))
+                    .frame(width: proxy.size.width * min(1, max(0, percentage / 100)))
+            }
+        }
+        .frame(height: 8)
+    }
+}
+
+// MARK: - Secondary Metric Row
+
+private struct SecondaryMetricRow: View {
+    let name: String
+    let percentage: Double
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(quotaColor(for: percentage))
+                .frame(width: 6, height: 6)
             
-            Text(provider.displayName)
-                .font(.caption)
-                .lineLimit(1)
+            Text(name)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
             
             Spacer()
             
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 6, height: 6)
-                
-                Text("\(readyCount)/\(accounts.count)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            Text(formatPercentage(percentage))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.primary)
         }
-        .padding(.vertical, 2)
+    }
+    
+    private func formatPercentage(_ value: Double) -> String {
+        let remaining = Int(value)
+        return remaining < 0 ? "—" : "\(remaining)%"
     }
 }
 
-private struct QuotaAccountRow: View {
-    let provider: AIProvider
-    let email: String
-    let data: ProviderQuotaData
-    
-    private var lowestQuotaModel: ModelQuota? {
-        data.models.min { $0.percentage < $1.percentage }
-    }
-    
-    private var overallColor: Color {
-        guard let lowest = lowestQuotaModel else { return .gray }
-        let remaining = lowest.percentage
-        if remaining > 50 { return .green }
-        if remaining > 20 { return .orange }
-        return .red
-    }
+// MARK: - Secondary Group Row (Antigravity)
+
+private struct SecondaryGroupRow: View {
+    let group: GroupedModelQuota
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                ProviderIcon(provider: provider, size: 14)
-                
-                Text(email)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-                
-                Spacer()
-                
-                if data.isForbidden {
-                    Text("Limit")
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                }
-            }
+        HStack(spacing: 6) {
+            Circle()
+                .fill(quotaColor(for: group.percentage))
+                .frame(width: 6, height: 6)
             
-            if !data.models.isEmpty {
-                HStack(spacing: 8) {
-                    if provider == .antigravity && data.hasGroupedModels {
-                        ForEach(data.groupedModels.prefix(3)) { groupedModel in
-                            GroupedQuotaModelBadge(groupedModel: groupedModel)
-                        }
-                    } else {
-                        ForEach(data.models.sorted { $0.name < $1.name }.prefix(3)) { model in
-                            QuotaModelBadge(model: model)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 8)
-        .background(.quaternary.opacity(0.3))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-}
-
-private struct QuotaModelBadge: View {
-    let model: ModelQuota
-    
-    @State private var settings = MenuBarSettingsManager.shared
-    
-    private var remainingPercent: Double {
-        model.percentage
-    }
-    
-    private var tintColor: Color {
-        if remainingPercent > 50 { return .green }
-        if remainingPercent > 20 { return .orange }
-        return .red
-    }
-    
-    var body: some View {
-        let displayMode = settings.quotaDisplayMode
-        let displayPercent = displayMode.displayValue(from: remainingPercent)
-        
-        VStack(alignment: .leading, spacing: 2) {
-            Text(model.displayName)
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            
-            HStack(spacing: 4) {
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(.quaternary)
-                        Capsule()
-                            .fill(tintColor.gradient)
-                            .frame(width: proxy.size.width * min(1, remainingPercent / 100))
-                    }
-                }
-                .frame(height: 4)
-                
-                Text(verbatim: "\(Int(displayPercent))%")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(tintColor)
-                    .frame(width: 36, alignment: .trailing)
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-private struct GroupedQuotaModelBadge: View {
-    let groupedModel: GroupedModelQuota
-    
-    @State private var settings = MenuBarSettingsManager.shared
-    
-    private var remainingPercent: Double {
-        groupedModel.percentage
-    }
-    
-    private var tintColor: Color {
-        if remainingPercent > 50 { return .green }
-        if remainingPercent > 20 { return .orange }
-        return .red
-    }
-    
-    var body: some View {
-        let displayMode = settings.quotaDisplayMode
-        let displayPercent = displayMode.displayValue(from: remainingPercent)
-        
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 2) {
-                Image(systemName: groupedModel.group.icon)
-                    .font(.system(size: 8))
-                    .foregroundStyle(.secondary)
-                
-                Text(groupedModel.displayName)
+            HStack(spacing: 3) {
+                Image(systemName: group.group.icon)
                     .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Text(group.displayName)
+                    .font(.system(size: 11))
             }
+            .foregroundStyle(.secondary)
             
-            HStack(spacing: 4) {
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(.quaternary)
-                        Capsule()
-                            .fill(tintColor.gradient)
-                            .frame(width: proxy.size.width * min(1, remainingPercent / 100))
-                    }
-                }
-                .frame(height: 4)
-                
-                Text(verbatim: "\(Int(displayPercent))%")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(tintColor)
-                    .frame(width: 36, alignment: .trailing)
-            }
+            Spacer()
+            
+            Text(formatPercentage(group.percentage))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.primary)
         }
-        .frame(maxWidth: .infinity)
+    }
+    
+    private func formatPercentage(_ value: Double) -> String {
+        let remaining = Int(value)
+        return remaining < 0 ? "—" : "\(remaining)%"
     }
 }
 
@@ -657,6 +645,97 @@ struct MenuBarIcon: View {
                     .font(.caption2)
                     .fontWeight(.medium)
             }
+        }
+    }
+}
+
+// MARK: - AIProvider Extension
+
+private extension AIProvider {
+    var shortName: String {
+        switch self {
+        case .gemini: return "Gemini"
+        case .claude: return "Claude"
+        case .codex: return "OpenAI"
+        case .cursor: return "Cursor"
+        case .copilot: return "Copilot"
+        case .trae: return "Trae"
+        case .antigravity: return "Antigravity"
+        case .qwen: return "Qwen"
+        case .iflow: return "iFlow"
+        case .vertex: return "Vertex"
+        case .kiro: return "Kiro"
+        }
+    }
+}
+
+// MARK: - Menu Bar Action Button
+
+private struct MenuBarActionButton: View {
+    let icon: String
+    let title: String
+    var isLoading: Bool = false
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    @State private var rotation: Double = 0
+    @State private var timer: Timer?
+    
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Image(systemName: icon)
+                    .font(.system(size: 12))
+                    .frame(width: 14)
+                    .rotationEffect(.degrees(rotation))
+                
+                Text(title)
+                    .font(.system(size: 13))
+                
+                Spacer()
+                
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background(isHovered ? Color.secondary.opacity(0.1) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoading)
+        .onHover { isHovered = $0 }
+        .onAppear {
+            updateTimer()
+        }
+        .onChange(of: isLoading) { _, _ in
+            updateTimer()
+        }
+        .onDisappear {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+    
+    private func updateTimer() {
+        timer?.invalidate()
+        timer = nil
+        
+        if isLoading {
+            // Use Timer for reliable animation in NSMenu context
+            timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+                Task { @MainActor in
+                    rotation += 18 // 360° / 20 steps = 18° per step
+                    if rotation >= 360 {
+                        rotation = 0
+                    }
+                }
+            }
+        } else {
+            rotation = 0
         }
     }
 }

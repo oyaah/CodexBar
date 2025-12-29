@@ -108,6 +108,8 @@ struct LocalizedStrings {
         "providers.projectIdOptional": [.english: "Project ID (optional)", .vietnamese: "ID dự án (tùy chọn)"],
         "providers.disabled": [.english: "Disabled", .vietnamese: "Đã tắt"],
         "providers.autoDetected": [.english: "Auto-detected", .vietnamese: "Tự động phát hiện"],
+        "providers.proxyRequired.title": [.english: "Proxy Required", .vietnamese: "Cần khởi động Proxy"],
+        "providers.proxyRequired.message": [.english: "The proxy server must be running to add new provider accounts.", .vietnamese: "Cần khởi động proxy để thêm tài khoản nhà cung cấp mới."],
         
         // Settings
         "settings.proxyServer": [.english: "Proxy Server", .vietnamese: "Máy chủ proxy"],
@@ -160,6 +162,7 @@ struct LocalizedStrings {
         "apiKeys.edit": [.english: "Edit", .vietnamese: "Sửa"],
         "apiKeys.empty": [.english: "No API Keys", .vietnamese: "Chưa có khóa API"],
         "apiKeys.emptyDescription": [.english: "Add API keys to authenticate clients with the proxy", .vietnamese: "Thêm khóa API để xác thực client với proxy"],
+        "apiKeys.proxyRequired": [.english: "Start the proxy to manage API keys", .vietnamese: "Khởi động proxy để quản lý khóa API"],
         
         // Logs
         "logs.clearLogs": [.english: "Clear Logs", .vietnamese: "Xóa nhật ký"],
@@ -182,6 +185,8 @@ struct LocalizedStrings {
         "action.delete": [.english: "Delete", .vietnamese: "Xóa"],
         "action.refresh": [.english: "Refresh", .vietnamese: "Làm mới"],
         "action.copyCode": [.english: "Copy Code", .vietnamese: "Sao chép mã"],
+        "action.quit": [.english: "Quit Quotio", .vietnamese: "Thoát Quotio"],
+        "action.openApp": [.english: "Open Quotio", .vietnamese: "Mở Quotio"],
         
         // Empty states
         "empty.proxyNotRunning": [.english: "Proxy Not Running", .vietnamese: "Proxy chưa chạy"],
@@ -335,6 +340,8 @@ struct LocalizedStrings {
         "agents.instructions.env": [.english: "Add these environment variables to your shell profile:", .vietnamese: "Thêm các biến môi trường này vào shell profile:"],
         "agents.instructions.file": [.english: "Configuration files have been created:", .vietnamese: "Các tệp cấu hình đã được tạo:"],
         "agents.proxyNotRunning": [.english: "Start the proxy to configure agents", .vietnamese: "Khởi động proxy để cấu hình agent"],
+        "agents.proxyRequired.title": [.english: "Proxy Required", .vietnamese: "Cần khởi động Proxy"],
+        "agents.proxyRequired.message": [.english: "The proxy server must be running to configure agents. Start the proxy first.", .vietnamese: "Cần khởi động proxy để cấu hình agent. Hãy khởi động proxy trước."],
         
         // Auth Modes
         "agents.oauthMode": [.english: "Use OAuth Authentication", .vietnamese: "Sử dụng xác thực OAuth"],
@@ -433,6 +440,11 @@ struct LocalizedStrings {
         "menubar.quotaMode": [.english: "Quota Monitor", .vietnamese: "Theo dõi Quota"],
         "menubar.trackedAccounts": [.english: "Tracked Accounts", .vietnamese: "Tài khoản theo dõi"],
         "menubar.noAccountsFound": [.english: "No accounts found", .vietnamese: "Không tìm thấy tài khoản"],
+        "menubar.noData": [.english: "No quota data available", .vietnamese: "Chưa có dữ liệu quota"],
+        
+        // Menu Bar - Tooltips
+        "menubar.tooltip.openApp": [.english: "Open main window (⌘O)", .vietnamese: "Mở cửa sổ chính (⌘O)"],
+        "menubar.tooltip.quit": [.english: "Quit Quotio (⌘Q)", .vietnamese: "Thoát Quotio (⌘Q)"],
         
         // Actions - New
         "action.refreshQuota": [.english: "Refresh Quota", .vietnamese: "Làm mới Quota"],
