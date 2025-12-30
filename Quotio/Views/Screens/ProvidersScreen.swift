@@ -7,6 +7,14 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// Wrapper for auto-detected account tuple to provide Identifiable conformance
+private struct AutoDetectedAccount: Identifiable {
+    let provider: AIProvider
+    let accountKey: String
+    
+    var id: String { "\(provider.rawValue)_\(accountKey)" }
+}
+
 struct ProvidersScreen: View {
     @Environment(QuotaViewModel.self) private var viewModel
     @State private var isImporterPresented = false
@@ -147,7 +155,7 @@ struct ProvidersScreen: View {
         // Auto-detected Accounts (like Cursor, Trae, Claude) - always show
         if !autoDetectedProviderAccounts.isEmpty {
             Section {
-                ForEach(autoDetectedProviderAccounts, id: \.accountKey) { account in
+                ForEach(autoDetectedProviderAccounts.map { AutoDetectedAccount(provider: $0.provider, accountKey: $0.accountKey) }) { account in
                     AutoDetectedAccountRow(provider: account.provider, accountKey: account.accountKey)
                 }
             } header: {
