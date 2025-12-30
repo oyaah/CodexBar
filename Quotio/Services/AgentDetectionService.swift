@@ -10,6 +10,31 @@ actor AgentDetectionService {
     private var cacheTimestamp: Date?
     private let cacheValidity: TimeInterval = 60
     
+    // MARK: - Common Binary Paths
+    
+    /// Common CLI binary paths to search
+    /// NOTE: Only checks file existence (metadata), does NOT read file content
+    /// This is different from IDE scanning which reads auth/config data
+    private static let commonBinaryPaths: [String] = [
+        // System paths
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+        "/usr/bin",
+        // User local
+        "~/.local/bin",
+        // Package managers
+        "~/.cargo/bin",          // Rust/Cargo
+        "~/.bun/bin",            // Bun (gemini-cli)
+        "~/.deno/bin",           // Deno
+        "~/.npm-global/bin",     // npm global
+        // Tool-specific
+        "~/.opencode/bin",       // OpenCode
+        // Version managers (static shim paths)
+        "~/.volta/bin",          // Volta
+        "~/.asdf/shims",         // asdf
+        "~/.local/share/mise/shims", // mise
+    ]
+    
     func detectAllAgents(forceRefresh: Bool = false) async -> [AgentStatus] {
         if !forceRefresh,
            let cached = cachedStatuses,
@@ -57,40 +82,60 @@ actor AgentDetectionService {
         )
     }
     
+    /// Find binary using 'which' command + fallback to common paths
     private func findBinary(names: [String]) async -> (found: Bool, path: String?) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         
         for name in names {
-            let commonPaths = [
-                // System paths
-                "/usr/local/bin/\(name)",
-                "/opt/homebrew/bin/\(name)",
-                "/usr/bin/\(name)",
-                // User local paths
-                "\(home)/.local/bin/\(name)",
-                // Package manager paths
-                "\(home)/.cargo/bin/\(name)",
-                "\(home)/.npm-global/bin/\(name)",
-                "\(home)/.bun/bin/\(name)",
-                // Tool-specific paths
-                "\(home)/.opencode/bin/\(name)",
-                "\(home)/.droid/bin/\(name)",
-                // Node global paths
-                "/usr/local/lib/node_modules/.bin/\(name)",
-                "\(home)/.nvm/versions/node/*/bin/\(name)"
-            ]
+            // 1. Try which command first (works if PATH is set correctly)
+            // Note: May not work in GUI apps due to limited PATH inheritance
+            if let path = await whichCommand(name) {
+                return (true, path)
+            }
             
-            for path in commonPaths {
+            // 2. Check static common paths
+            // NOTE: Only checks file existence (metadata), does NOT read file content
+            for basePath in Self.commonBinaryPaths {
+                let expandedBase = basePath.replacingOccurrences(of: "~", with: home)
+                let fullPath = "\(expandedBase)/\(name)"
+                if FileManager.default.isExecutableFile(atPath: fullPath) {
+                    return (true, fullPath)
+                }
+            }
+            
+            // 3. Check version manager paths (nvm, fnm - versioned directories)
+            for path in getVersionManagerPaths(name: name, home: home) {
                 if FileManager.default.isExecutableFile(atPath: path) {
                     return (true, path)
                 }
             }
-            
-            if let path = await whichCommand(name) {
-                return (true, path)
-            }
         }
         return (false, nil)
+    }
+    
+    /// Get paths from version managers that use versioned subdirectories
+    /// Sorted descending to prefer newer versions
+    private func getVersionManagerPaths(name: String, home: String) -> [String] {
+        var paths: [String] = []
+        let fileManager = FileManager.default
+        
+        // nvm: ~/.nvm/versions/node/v*/bin/
+        let nvmBase = "\(home)/.nvm/versions/node"
+        if let versions = try? fileManager.contentsOfDirectory(atPath: nvmBase) {
+            for version in versions.sorted().reversed() {
+                paths.append("\(nvmBase)/\(version)/bin/\(name)")
+            }
+        }
+        
+        // fnm: ~/.fnm/node-versions/v*/installation/bin/
+        let fnmBase = "\(home)/.fnm/node-versions"
+        if let versions = try? fileManager.contentsOfDirectory(atPath: fnmBase) {
+            for version in versions.sorted().reversed() {
+                paths.append("\(fnmBase)/\(version)/installation/bin/\(name)")
+            }
+        }
+        
+        return paths
     }
     
     private func whichCommand(_ name: String) async -> String? {

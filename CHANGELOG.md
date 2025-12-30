@@ -5,6 +5,28 @@ All notable changes to Quotio will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Privacy**: Reduce file system access to address macOS privacy warnings (#29)
+  - Remove Cursor and Trae from auto-refresh - require explicit user scan
+  - Add "Scan for IDEs" button with consent dialog on Providers screen
+  - No persistent storage of scan consent - cleared on app restart
+
+- **Agent Detection**: Restore CLI binary paths for proper detection
+  - Issue: GUI apps don't inherit user's shell PATH, causing `which` to fail
+  - Re-add common paths: ~/.local/bin, ~/.bun/bin, ~/.cargo/bin, ~/.deno/bin
+  - Add tool-specific: ~/.opencode/bin
+  - Add version manager support: nvm, fnm, Volta, asdf, mise
+  - Note: Binary detection only checks file existence (metadata), not content
+
+### Added
+
+- **IDE Scan Dialog**: New consent-based IDE scanning with privacy notice
+- **IDE Quota Persistence**: Cursor and Trae quota data now persists across app restarts
+- **Localization**: Vietnamese translations for IDE scan UI
+
 ## [0.3.0] - 2025-12-29
 
 ### Added
